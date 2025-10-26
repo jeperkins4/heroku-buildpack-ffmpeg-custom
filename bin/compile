@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -e
+
+BUILD_DIR=$1
+CACHE_DIR=$2
+ENV_DIR=$3
+
+echo "-----> Installing FFmpeg with libfreetype and libharfbuzz support"
+
+# Download static build with drawtext enabled (tested builds usually include these libs)
+FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+
+mkdir -p $BUILD_DIR/.bin
+cd /tmp
+curl -L $FFMPEG_URL | tar xJf -
+cp ffmpeg-*-amd64-static/ffmpeg $BUILD_DIR/.bin/
+cp ffmpeg-*-amd64-static/ffprobe $BUILD_DIR/.bin/
+chmod +x $BUILD_DIR/.bin/ffmpeg $BUILD_DIR/.bin/ffprobe
+
+echo "-----> FFmpeg installed to $BUILD_DIR/.bin"
+
+# Add .bin to PATH
+echo "export PATH=\"$BUILD_DIR/.bin:\$PATH\"" >> $BUILD_DIR/.profile.d/ffmpeg.sh

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "Custom FFmpeg Buildpack"
+exit 0
