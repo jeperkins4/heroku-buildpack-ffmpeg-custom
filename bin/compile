@@ -5,22 +5,94 @@ BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
 
-echo "-----> Installing FFmpeg with libfreetype and libharfbuzz support"
+FFMPEG_VERSION="6.1"
+FREETYPE_VERSION="2.13.2"
+FONTCONFIG_VERSION="2.15.0"
+
+echo "-----> Building FFmpeg ${FFMPEG_VERSION} with drawtext support"
 
 # Create required directories
 mkdir -p "$BUILD_DIR/.bin"
 mkdir -p "$BUILD_DIR/.profile.d"
+mkdir -p "$CACHE_DIR/ffmpeg-build"
+mkdir -p "$CACHE_DIR/ffmpeg-install"
 
-# Download static FFmpeg binary (includes drawtext, freetype, harfbuzz)
-FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+INSTALL_DIR="$CACHE_DIR/ffmpeg-install"
+BUILD_TEMP="$CACHE_DIR/ffmpeg-build"
 
-cd /tmp
-curl -L "$FFMPEG_URL" | tar xJf -
-cp ffmpeg-*-amd64-static/ffmpeg "$BUILD_DIR/.bin/"
-cp ffmpeg-*-amd64-static/ffprobe "$BUILD_DIR/.bin/"
+cd "$BUILD_TEMP"
+
+# Check if already built
+if [ -f "$INSTALL_DIR/bin/ffmpeg" ]; then
+    echo "-----> Using cached FFmpeg build"
+else
+    echo "-----> Building FFmpeg from source (this may take a while)"
+
+    # Build FreeType (required for drawtext)
+    if [ ! -f "$INSTALL_DIR/lib/libfreetype.a" ]; then
+        echo "-----> Building FreeType ${FREETYPE_VERSION}"
+        curl -L "https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.gz" | tar xzf -
+        cd "freetype-${FREETYPE_VERSION}"
+        ./configure --prefix="$INSTALL_DIR" --disable-shared --enable-static --without-harfbuzz
+        make -j$(nproc)
+        make install
+        cd "$BUILD_TEMP"
+    fi
+
+    # Build Fontconfig (optional but recommended for font discovery)
+    if [ ! -f "$INSTALL_DIR/lib/libfontconfig.a" ]; then
+        echo "-----> Building Fontconfig ${FONTCONFIG_VERSION}"
+        curl -L "https://www.freedesktop.org/software/fontconfig/release/fontconfig-${FONTCONFIG_VERSION}.tar.gz" | tar xzf -
+        cd "fontconfig-${FONTCONFIG_VERSION}"
+        PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig" \
+        ./configure --prefix="$INSTALL_DIR" --disable-shared --enable-static --disable-docs
+        make -j$(nproc)
+        make install
+        cd "$BUILD_TEMP"
+    fi
+
+    # Build FFmpeg
+    echo "-----> Building FFmpeg ${FFMPEG_VERSION}"
+    curl -L "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" | tar xJf -
+    cd "ffmpeg-${FFMPEG_VERSION}"
+
+    PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig" \
+    ./configure \
+        --prefix="$INSTALL_DIR" \
+        --pkg-config-flags="--static" \
+        --extra-cflags="-I${INSTALL_DIR}/include" \
+        --extra-ldflags="-L${INSTALL_DIR}/lib" \
+        --extra-libs="-lpthread -lm" \
+        --bindir="$INSTALL_DIR/bin" \
+        --disable-shared \
+        --enable-static \
+        --enable-gpl \
+        --enable-version3 \
+        --enable-libfreetype \
+        --enable-fontconfig \
+        --enable-filter=drawtext \
+        --disable-debug \
+        --disable-doc \
+        --disable-ffplay
+
+    make -j$(nproc)
+    make install
+    cd "$BUILD_TEMP"
+fi
+
+# Copy binaries to build directory
+cp "$INSTALL_DIR/bin/ffmpeg" "$BUILD_DIR/.bin/"
+cp "$INSTALL_DIR/bin/ffprobe" "$BUILD_DIR/.bin/"
 chmod +x "$BUILD_DIR/.bin/ffmpeg" "$BUILD_DIR/.bin/ffprobe"
 
 echo "-----> FFmpeg installed to $BUILD_DIR/.bin"
+
+# Verify drawtext support
+if "$BUILD_DIR/.bin/ffmpeg" -filters 2>&1 | grep -q "drawtext"; then
+    echo "-----> ✓ drawtext filter is available"
+else
+    echo "-----> ✗ WARNING: drawtext filter not found"
+fi
 
 # Add to PATH for runtime
 echo 'export PATH="$HOME/.bin:$PATH"' > "$BUILD_DIR/.profile.d/ffmpeg.sh"
