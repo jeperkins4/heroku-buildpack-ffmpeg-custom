@@ -8,8 +8,24 @@ ENV_DIR=$3
 FFMPEG_VERSION="6.1"
 FREETYPE_VERSION="2.13.2"
 FONTCONFIG_VERSION="2.15.0"
+EXPAT_VERSION="2.5.0"
+UTIL_LINUX_VERSION="2.39.3"
 
-echo "-----> Building FFmpeg ${FFMPEG_VERSION} with drawtext support"
+# Detect number of processors for parallel builds
+if command -v nproc > /dev/null 2>&1; then
+    NUM_JOBS=$(nproc)
+elif command -v getconf > /dev/null 2>&1; then
+    NUM_JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+else
+    NUM_JOBS=2
+fi
+
+# Limit jobs to avoid memory issues on Heroku (max 2GB RAM in build environment)
+if [ "$NUM_JOBS" -gt 4 ]; then
+    NUM_JOBS=4
+fi
+
+echo "-----> Building FFmpeg ${FFMPEG_VERSION} with drawtext support (using ${NUM_JOBS} jobs)"
 
 # Create required directories
 mkdir -p "$BUILD_DIR/.bin"
@@ -28,13 +44,36 @@ if [ -f "$INSTALL_DIR/bin/ffmpeg" ]; then
 else
     echo "-----> Building FFmpeg from source (this may take a while)"
 
+    # Build expat (required for fontconfig)
+    if [ ! -f "$INSTALL_DIR/lib/libexpat.a" ]; then
+        echo "-----> Building expat ${EXPAT_VERSION}"
+        curl -L "https://github.com/libexpat/libexpat/releases/download/R_${EXPAT_VERSION//./_}/expat-${EXPAT_VERSION}.tar.xz" | tar xJf -
+        cd "expat-${EXPAT_VERSION}"
+        ./configure --prefix="$INSTALL_DIR" --disable-shared --enable-static
+        make -j${NUM_JOBS}
+        make install
+        cd "$BUILD_TEMP"
+    fi
+
+    # Build util-linux (for libuuid, required for fontconfig)
+    if [ ! -f "$INSTALL_DIR/lib/libuuid.a" ]; then
+        echo "-----> Building util-linux ${UTIL_LINUX_VERSION} (for libuuid)"
+        curl -L "https://www.kernel.org/pub/linux/utils/util-linux/v${UTIL_LINUX_VERSION%.*}/util-linux-${UTIL_LINUX_VERSION}.tar.xz" | tar xJf -
+        cd "util-linux-${UTIL_LINUX_VERSION}"
+        ./configure --prefix="$INSTALL_DIR" --disable-shared --enable-static \
+            --disable-all-programs --enable-libuuid
+        make -j${NUM_JOBS}
+        make install
+        cd "$BUILD_TEMP"
+    fi
+
     # Build FreeType (required for drawtext)
     if [ ! -f "$INSTALL_DIR/lib/libfreetype.a" ]; then
         echo "-----> Building FreeType ${FREETYPE_VERSION}"
         curl -L "https://download.savannah.gnu.org/releases/freetype/freetype-${FREETYPE_VERSION}.tar.gz" | tar xzf -
         cd "freetype-${FREETYPE_VERSION}"
         ./configure --prefix="$INSTALL_DIR" --disable-shared --enable-static --without-harfbuzz
-        make -j$(nproc)
+        make -j${NUM_JOBS}
         make install
         cd "$BUILD_TEMP"
     fi
@@ -45,8 +84,12 @@ else
         curl -L "https://www.freedesktop.org/software/fontconfig/release/fontconfig-${FONTCONFIG_VERSION}.tar.gz" | tar xzf -
         cd "fontconfig-${FONTCONFIG_VERSION}"
         PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig" \
+        EXPAT_CFLAGS="-I${INSTALL_DIR}/include" \
+        EXPAT_LIBS="-L${INSTALL_DIR}/lib -lexpat" \
+        LIBUUID_CFLAGS="-I${INSTALL_DIR}/include" \
+        LIBUUID_LIBS="-L${INSTALL_DIR}/lib -luuid" \
         ./configure --prefix="$INSTALL_DIR" --disable-shared --enable-static --disable-docs
-        make -j$(nproc)
+        make -j${NUM_JOBS}
         make install
         cd "$BUILD_TEMP"
     fi
@@ -75,7 +118,7 @@ else
         --disable-doc \
         --disable-ffplay
 
-    make -j$(nproc)
+    make -j${NUM_JOBS}
     make install
     cd "$BUILD_TEMP"
 fi
